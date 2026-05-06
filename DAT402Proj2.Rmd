@@ -1,0 +1,278 @@
+---
+title: "DAT402Proj2"
+author: "William Reid"
+date: "2026-05-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(cluster)
+library(factoextra)
+library(rpart)
+library(rpart.plot)
+library(nnet)
+library(randomForest)
+library(class)
+```
+
+Introduction
+
+This project uses machine learning to predict a Pokemon’s primary type based on its stats, height, weight, and base experience.
+
+The goal is to compare multiple machine learning models and determine which model performs best at classifying Pokemon types.
+
+Dataset Description
+```{r}
+data <- read.csv("pokemon_data.csv")
+
+head(data)
+str(data)
+summary(data)
+```
+
+Data Cleaning
+```{r}
+data_clean <- data %>%
+  separate(
+    stats,
+    into = c("hp", "attack", "defense", "special_attack", "special_defense", "speed"),
+    sep = ", "
+  ) %>%
+  mutate(
+    hp = as.numeric(gsub("hp=", "", hp)),
+    attack = as.numeric(gsub("attack=", "", attack)),
+    defense = as.numeric(gsub("defense=", "", defense)),
+    special_attack = as.numeric(gsub("special-attack=", "", special_attack)),
+    special_defense = as.numeric(gsub("special-defense=", "", special_defense)),
+    speed = as.numeric(gsub("speed=", "", speed)),
+    primary_type = sapply(strsplit(types, ", "), `[`, 1),
+    primary_type = as.factor(primary_type)
+  ) %>%
+  na.omit()
+
+str(data_clean)
+summary(data_clean)
+```
+
+# Exploratory Data Analysis
+
+Type Distribution
+```{r}
+ggplot(data_clean, aes(x = fct_infreq(primary_type))) +
+  geom_bar(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Distribution of Pokemon Primary Types",
+    x = "Primary Type",
+    y = "Count"
+  )
+```
+
+Attack vs Speed
+```{r}
+## Attack vs Speed by Type (Custom colors)
+
+ggplot(data_clean, aes(x = attack, y = speed, color = primary_type)) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = c(
+    "fire" = "red",
+    "water" = "blue",
+    "grass" = "green",
+    "electric" = "gold",
+    "psychic" = "purple",
+    "rock" = "brown",
+    "ground" = "tan",
+    "ice" = "lightblue",
+    "dragon" = "darkblue",
+    "dark" = "black",
+    "fairy" = "pink",
+    "fighting" = "orange",
+    "ghost" = "violet",
+    "bug" = "darkgreen",
+    "steel" = "gray"
+  )) +
+  labs(
+    title = "Attack vs Speed by Primary Type",
+    x = "Attack",
+    y = "Speed",
+    color = "Primary Type"
+  )
+```
+
+Stats by Primary Type
+```{r}
+data_long <- data_clean %>%
+  select(primary_type, hp, attack, defense, special_attack, special_defense, speed) %>%
+  pivot_longer(
+    cols = c(hp, attack, defense, special_attack, special_defense, speed),
+    names_to = "stat",
+    values_to = "value"
+  )
+``` 
+```{r}
+avg_stats <- data_long %>%
+  group_by(primary_type, stat) %>%
+  summarise(mean_value = mean(value), .groups = "drop")
+
+ggplot(avg_stats, aes(x = primary_type, y = mean_value, fill = stat)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(
+    title = "Average Pokemon Stats by Type",
+    x = "Primary Type",
+    y = "Average Value"
+  )
+```
+
+Unsupervised Learning (PCA)
+```{r}
+numeric_data <- data_clean %>%
+  select(hp, attack, defense, special_attack, special_defense, speed)
+
+scaled_data <- scale(numeric_data)
+
+pca_model <- prcomp(scaled_data)
+
+summary(pca_model)
+```
+```{r fig.width=10, fig.height=7}
+fviz_pca_ind(
+  pca_model,
+  geom = "point",
+  col.ind = data_clean$primary_type,
+  title = "PCA Plot of Pokemon Stats"
+)
+```
+
+Train/Test Split
+```{r}
+set.seed(123)
+
+train_index <- createDataPartition(data_clean$primary_type, p = 0.7, list = FALSE)
+
+train <- data_clean[train_index, ]
+test <- data_clean[-train_index, ]
+```
+
+Model 1: Decision Tree
+```{r}
+tree_model <- rpart(primary_type ~ hp + attack + defense + special_attack + special_defense + speed + height + weight + base_experience,
+                    data = train,
+                    method = "class")
+
+rpart.plot(tree_model)
+
+tree_pred <- predict(tree_model, test, type = "class")
+
+tree_cm <- confusionMatrix(tree_pred, test$primary_type)
+tree_cm
+```
+
+Model 2: Random Forest
+```{r}
+set.seed(123)
+
+rf_model <- randomForest(
+  primary_type ~ hp + attack + defense + special_attack + special_defense + speed + height + weight + base_experience,
+  data = train,
+  ntree = 500,
+  importance = TRUE
+)
+
+rf_pred <- predict(rf_model, test)
+
+rf_cm <- confusionMatrix(rf_pred, test$primary_type)
+rf_cm
+```
+```{r}
+varImpPlot(rf_model)
+```
+
+Model 3: KNN
+```{r}
+train_x <- train %>%
+  select(hp, attack, defense, special_attack, special_defense, speed, height, weight, base_experience)
+
+test_x <- test %>%
+  select(hp, attack, defense, special_attack, special_defense, speed, height, weight, base_experience)
+
+train_x_scaled <- scale(train_x)
+
+test_x_scaled <- scale(
+  test_x,
+  center = attr(train_x_scaled, "scaled:center"),
+  scale = attr(train_x_scaled, "scaled:scale")
+)
+
+knn_pred <- knn(
+  train = train_x_scaled,
+  test = test_x_scaled,
+  cl = train$primary_type,
+  k = 5
+)
+
+knn_cm <- confusionMatrix(knn_pred, test$primary_type)
+knn_cm
+```
+
+Model 4: Neural Network
+```{r}
+set.seed(123)
+
+nn_model <- nnet(
+  primary_type ~ hp + attack + defense + special_attack + special_defense + speed + height + weight + base_experience,
+  data = train,
+  size = 5,
+  maxit = 500,
+  trace = FALSE
+)
+
+nn_pred <- predict(nn_model, test, type = "class")
+nn_pred <- as.factor(nn_pred)
+
+nn_cm <- confusionMatrix(nn_pred, test$primary_type)
+nn_cm
+```
+
+Results
+```{r}
+results <- data.frame(
+  Model = c("Decision Tree", "Random Forest", "KNN", "Neural Network"),
+  Accuracy = c(
+    tree_cm$overall["Accuracy"],
+    rf_cm$overall["Accuracy"],
+    knn_cm$overall["Accuracy"],
+    nn_cm$overall["Accuracy"]
+  )
+)
+
+results
+```
+
+```{r}
+ggplot(results, aes(x = reorder(Model, Accuracy), y = Accuracy)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  labs(
+    title = "Model Accuracy Comparison",
+    x = "Model",
+    y = "Accuracy"
+  )
+```
+
+Conclusion
+
+This project used machine learning to predict a Pokemon's primary type based on its stats and physical characteristics.
+
+The models compared were a decision tree, random forest, KNN, and neural network. Based on the accuracy results, the best-performing model was random forest.
+
+The results show that Pokemon stats provide some useful information for predicting type, but there are limitations. Many Pokemon types overlap in their stats, which makes classification difficult.
+
+Future improvements could include using more features, tuning model parameters, trying different neural network architectures, or simplifying the prediction problem by grouping similar Pokemon types together.
+
+
